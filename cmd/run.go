@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/spf13/pflag"
 	"github.com/whalebrew/whalebrew/packages"
 	"golang.org/x/crypto/ssh/terminal"
 )
@@ -55,6 +56,31 @@ func appendVolumes(dockerArgs []string, pkg *packages.Package) ([]string, error)
 	return dockerArgs, nil
 }
 
+func parseRuntimeVolumes(args []string, pkg *packages.Package) {
+	flags := pflag.NewFlagSet("volume-binder", pflag.ContinueOnError)
+	flags.ParseErrorsWhitelist.UnknownFlags = true
+	volumesArgs := []*[]string{}
+	for _, name := range pkg.PathArguments {
+		if len(name) == 1 {
+			// Allow shorthand grouping like -cf
+			volumesArgs = append(volumesArgs, flags.StringArrayP(name, name, []string{}, ""))
+		} else {
+			volumesArgs = append(volumesArgs, flags.StringArray(name, []string{}, ""))
+		}
+	}
+	flags.Parse(args)
+	for _, vs := range volumesArgs {
+		for _, volume := range *vs {
+			if volume != "-" {
+				volume, err := filepath.Abs(volume)
+				if err == nil {
+					pkg.Volumes = append(pkg.Volumes, fmt.Sprintf("%s:%s", volume, volume))
+				}
+			}
+		}
+	}
+}
+
 // Run runs a package after extracting arguments
 func Run(args []string) error {
 	pkg, err := packages.LoadPackageFromPath(args[1])
@@ -62,6 +88,9 @@ func Run(args []string) error {
 		return err
 	}
 	args = args[2:]
+
+	parseRuntimeVolumes(args, pkg)
+
 	dockerPath, err := exec.LookPath("docker")
 	if err != nil {
 		return err
