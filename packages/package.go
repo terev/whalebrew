@@ -1,12 +1,16 @@
 package packages
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/ioutil"
 	"path/filepath"
 	"strings"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/strslice"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/google/go-cmp/cmp"
 	"github.com/whalebrew/whalebrew/client"
 	"github.com/whalebrew/whalebrew/version"
@@ -202,4 +206,51 @@ func (pkg *Package) HasChanges(ctx context.Context, cli *client.Client) (bool, s
 	diff := cmp.Diff(newPkg, pkg)
 
 	return diff != "", diff, nil
+}
+
+func (pkg *Package) DetectEntrypoint(binName string, ctx context.Context, cli *client.Client) (string, error) {
+	detectCmd := []string{"which"}
+	if binName == "" {
+		detectCmd = append(detectCmd, pkg.Name)
+	} else {
+		detectCmd = append(detectCmd, binName)
+	}
+
+	resp, err := cli.ContainerCreate(ctx, &container.Config{
+		Image: pkg.Image,
+		Cmd: strslice.StrSlice(detectCmd),
+	}, nil, nil, "")
+
+	if err != nil {
+		return "", err
+	}
+
+	if err := cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
+		return "", err
+	}
+
+	resultC, errC := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
+
+	select {
+	case result := <-resultC:
+		if result.Error != nil {
+			return "", fmt.Errorf("error waiting for container: %v", result.Error.Message)
+		}
+	case err := <-errC:
+		return "", fmt.Errorf("error waiting for container: %v", err)
+	}
+
+	out, err := cli.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{
+		ShowStdout: true,
+	})
+
+	var buff bytes.Buffer
+
+	if _, err := stdcopy.StdCopy(&buff, &buff, out); err != nil {
+		return "", err
+	}
+
+	cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{})
+
+	return strings.TrimSpace(buff.String()), nil
 }
