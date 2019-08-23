@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/strslice"
@@ -20,6 +21,20 @@ import (
 )
 
 const DefaultWorkingDir = "/workdir"
+
+const detectCmd = `(type "which" >/dev/null 2>&1 && which "{{.SearchName}}") || (type "whereis" >/dev/null 2>&1 && whereis "{{.SearchName}}" | cut -d':' -f 2 | cut -d' ' -f 1)`
+
+var detectCmdTpl *template.Template
+
+func init() {
+	var err error
+	detectCmdTpl = template.New("DetectCmdTpl")
+
+	detectCmdTpl, err = detectCmdTpl.Parse(detectCmd)
+	if err != nil {
+		panic(err)
+	}
+}
 
 // Package represents a Whalebrew package
 type Package struct {
@@ -186,17 +201,40 @@ func (pkg *Package) HasChanges(ctx context.Context, cli *client.Client) (bool, s
 	return !equal, reporter.String(), nil
 }
 
-func (pkg *Package) DetectEntrypoint(binName string, ctx context.Context, cli *client.Client) (string, error) {
-	detectCmd := []string{"which"}
+func getDetectCmd(searchName string) (string, error) {
+	var result bytes.Buffer
+
+	err := detectCmdTpl.Execute(&result, struct{
+		SearchName string
+	} {
+		SearchName: searchName,
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	return result.String(), nil
+}
+
+// TODO: !! sanitize binName
+func (pkg *Package) DetectBinaryPath(binName string, ctx context.Context, cli *client.Client) (string, error) {
+	var searchName string
 	if binName == "" {
-		detectCmd = append(detectCmd, pkg.Name)
+		searchName = pkg.Name
 	} else {
-		detectCmd = append(detectCmd, binName)
+		searchName = binName
+	}
+
+	detectCmd, err := getDetectCmd(searchName)
+	if err != nil {
+		return "", err
 	}
 
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image: pkg.Image,
-		Cmd: strslice.StrSlice(detectCmd),
+		Entrypoint: strslice.StrSlice([]string{"/bin/sh"}),
+		Cmd: strslice.StrSlice([]string{"-c", detectCmd}),
 	}, nil, nil, "")
 
 	if err != nil {
@@ -220,15 +258,21 @@ func (pkg *Package) DetectEntrypoint(binName string, ctx context.Context, cli *c
 
 	out, err := cli.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{
 		ShowStdout: true,
+		ShowStderr: true,
 	})
 
 	var buff bytes.Buffer
+	var errBuff bytes.Buffer
 
-	if _, err := stdcopy.StdCopy(&buff, &buff, out); err != nil {
+	if _, err := stdcopy.StdCopy(&buff, &errBuff, out); err != nil {
 		return "", err
 	}
 
 	cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{})
+	if errBuff.Len() > 0 {
+		return "", fmt.Errorf("failed detecting path to binary with error: %s", errBuff.String())
+	}
 
+	fmt.Println(buff.String())
 	return strings.TrimSpace(buff.String()), nil
 }
