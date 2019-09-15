@@ -217,7 +217,6 @@ func getDetectCmd(searchName string) (string, error) {
 	return result.String(), nil
 }
 
-// TODO: !! sanitize binName
 func (pkg *Package) DetectBinaryPath(binName string, ctx context.Context, cli *client.Client) (string, error) {
 	var searchName string
 	if binName == "" {
@@ -268,9 +267,13 @@ func (pkg *Package) DetectBinaryPath(binName string, ctx context.Context, cli *c
 		return "", err
 	}
 
-	cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{})
+	err = cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{})
+	if err != nil {
+		fmt.Printf("failed to remove container id:%s used to detect entrypoint, with error: %s", resp.ID, err.Error())
+	}
+
 	if errBuff.Len() > 0 {
-		return "", fmt.Errorf("failed detecting path to binary with error: %s", errBuff.String())
+		fmt.Errorf("failed detecting path to binary with error: %s", errBuff.String())
 	}
 
 	fmt.Println(buff.String())

@@ -59,22 +59,34 @@ var installCommand = &cobra.Command{
 			return err
 		}
 
-		if imageInspect.Config.Entrypoint == nil {
-			if detected, err := pkg.DetectBinaryPath(binName, ctx, cli); err != nil {
-				return err
-			} else if detected != "" {
-				pkg.Entrypoint = []string{detected}
-			} else {
-				return fmt.Errorf("the image '%s' is not compatible with Whalebrew: it does not have an entrypoint", imageName)
-			}
-		}
-
 		if customPackageName != "" {
 			pkg.Name = customPackageName
 		}
 
 		if customEntrypoint != "" {
 			pkg.Entrypoint = []string{customEntrypoint}
+		}
+
+		// If user asks for path to binary as new entrypoint, try to detect the path to the binary
+		if binName != "" {
+			binName = path.Clean(path.Base(binName))
+
+			if detected, err := pkg.DetectBinaryPath(binName, ctx, cli); err != nil {
+				return err
+			} else if detected != "" {
+				pkg.Entrypoint = []string{detected}
+			}
+		}
+
+		if imageInspect.Config.Entrypoint == nil && pkg.Entrypoint == nil {
+			// If no entrypoint has been defined or asked to be detected, try to detect based on the image name
+			if detected, err := pkg.DetectBinaryPath("", ctx, cli); err != nil {
+				return err
+			} else if detected != "" {
+				pkg.Entrypoint = []string{detected}
+			} else {
+				return fmt.Errorf("the image '%s' is not compatible with Whalebrew: it does not have an entrypoint", imageName)
+			}
 		}
 
 		installPath := viper.GetString("install_path")
@@ -147,4 +159,3 @@ var installCommand = &cobra.Command{
 		return nil
 	},
 }
-
